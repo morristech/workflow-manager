@@ -446,6 +446,7 @@ func TestUpdateWorkflowStatusNoop(t *testing.T) {
 
 	require.NoError(t, c.manager.UpdateWorkflowSummary(ctx, workflow))
 	assert.Equal(t, models.WorkflowStatusCancelled, workflow.Status)
+	assert.Nil(t, workflow.LastJob)
 }
 
 var jobCreatedEventTimestamp = time.Now()
@@ -549,8 +550,20 @@ func TestUpdateWorkflowStatusJobFailed(t *testing.T) {
 			}}, true)
 		})
 
+	testCtx := context.Background()
+	c.mockSFNAPI.EXPECT().GetExecutionHistoryWithContext(testCtx, &sfn.GetExecutionHistoryInput{
+		ExecutionArn: aws.String(sfnExecutionARN),
+		ReverseOrder: aws.Bool(true),
+	}).Return(&sfn.GetExecutionHistoryOutput{
+		Events: []*sfn.HistoryEvent{
+			jobCreatedEvent,
+			jobFailedEvent,
+		},
+	}, nil)
+
 	require.NoError(t, c.manager.UpdateWorkflowSummary(ctx, workflow))
 	require.NoError(t, c.manager.UpdateWorkflowHistory(ctx, workflow))
+	require.NoError(t, c.manager.UpdateWorkflowLastJob(testCtx, workflow))
 	assert.Equal(t, models.WorkflowStatusFailed, workflow.Status)
 	require.Len(t, workflow.Jobs, 1)
 	assertBasicJobData(t, workflow.Jobs[0])
@@ -558,6 +571,13 @@ func TestUpdateWorkflowStatusJobFailed(t *testing.T) {
 	assert.Equal(t, "line4\nline5\nline6", workflow.Jobs[0].StatusReason)
 	assert.WithinDuration(
 		t, jobFailedEventTimestamp, time.Time(workflow.Jobs[0].StoppedAt), 1*time.Second,
+	)
+	require.NotNil(t, workflow.LastJob)
+	assertBasicJobData(t, workflow.LastJob)
+	assert.Equal(t, models.JobStatusFailed, workflow.LastJob.Status)
+	assert.Equal(t, "line4\nline5\nline6", workflow.LastJob.StatusReason)
+	assert.WithinDuration(
+		t, jobFailedEventTimestamp, time.Time(workflow.LastJob.StoppedAt), 1*time.Second,
 	)
 }
 
